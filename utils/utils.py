@@ -9,15 +9,26 @@ import numpy as np
 import torch.nn as nn
 
 # set random seed
-def set_seed(args):
+# def set_seed(args):
+#     torch.backends.cudnn.deterministic = True
+#     torch.backends.cudnn.benchmark = False
+#     random.seed(args.seed)
+#     np.random.seed(args.seed)
+#     torch.random.manual_seed(args.seed)
+#     if args.device >= 0:
+#         torch.cuda.manual_seed(args.seed)
+#         torch.cuda.manual_seed_all(args.seed)
+
+def set_seed(seed, nb_devices):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.random.manual_seed(args.seed)
-    if args.device >= 0:
-        torch.cuda.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.random.manual_seed(seed)
+    if nb_devices >= 0:
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
 
 # get ArgumentParser
 def get_args():

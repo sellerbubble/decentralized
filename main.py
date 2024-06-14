@@ -14,16 +14,33 @@ from networks import load_model, load_valuemodel
 from workers.worker_vision import *
 from utils.scheduler import Warmup_MultiStepLR
 from utils.utils import *
+from easydict import EasyDict
+import wandb
+
+# 登录Wandb账户
+wandb.login(key="831b4bf90cf69dcf8cae62953d13595412ce439d")
+
+# 初始化Wandb项目
+wandb.init(project="example_project", entity="your_entity_name")
+
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 dir_path = os.path.dirname(__file__)
 
 nfs_dataset_path1 = '/mnt/nfs4-p1/ckx/datasets/'
 nfs_dataset_path2 = '/nfs4-p1/ckx/datasets/'
-
+from fire import Fire
 # torch.set_num_threads(4) 
 
-def main(args):
-    set_seed(args)
+def main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_size=512, n_swap=None,
+         mode='csgd', shuffle="fixed", size=16, port=29500, backend="gloo",
+         model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
+         warmup_step=0, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
+         device=0, amp=False, sample=0):
+    
+    # set_seed(args)
+    set_seed(seed, torch.cuda.device_count())
+    args = EasyDict(locals().copy())
+    args = add_identity(args, dir_path)
 
     # check nfs dataset path
     if os.path.exists(nfs_dataset_path1):
@@ -55,7 +72,7 @@ def main(args):
             worker = Worker_Vision_AMP(model, rank, optimizer, scheduler, train_loader, args.device)
         else:
             if args.mode == 'dqn_chooseone':
-                worker = DQNAgent(model, value_model, rank, optimizer, scheduler, train_loader, args.device, args.size)
+                worker = DQNAgent(model, value_model, rank, optimizer, scheduler, train_loader, args)
             else:
                 worker = Worker_Vision(model, rank, optimizer, scheduler, train_loader, args.device)
         worker_list.append(worker)
@@ -130,6 +147,8 @@ def main(args):
                         f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
                         f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
                         flush=True, end="\n")
+                wandb.log({'iteration': iteration, 'epoch': epoch, 'train_loss': train_loss,'train_acc': train_acc,
+                           'valid_loss':valid_loss, 'valid_acc': valid_acc })
             else:
                 end_time = datetime.datetime.now() 
                 print(f"\r|\033[0;31m Iteration:{eval_iteration}-{iteration}, time: {(end_time - start_time).seconds}s\033[0m", flush=True, end="")
@@ -151,41 +170,46 @@ def main(args):
 
 if __name__=='__main__':
 
-    parser = argparse.ArgumentParser()
-    ## dataset
-    parser.add_argument("--dataset_path", type=str, default='datasets')
-    parser.add_argument("--dataset_name", type=str, default='CIFAR10',
-                                            choices=['CIFAR10','CIFAR100','TinyImageNet'])
-    parser.add_argument("--image_size", type=int, default=56, help='input image size')
-    parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument('--n_swap', type=int, default=None)
+    # parser = argparse.ArgumentParser()
+    # ## dataset
+    # parser.add_argument("--dataset_path", type=str, default='datasets')
+    # parser.add_argument("--dataset_name", type=str, default='CIFAR10',
+    #                                         choices=['CIFAR10','CIFAR100','TinyImageNet'])
+    # parser.add_argument("--image_size", type=int, default=56, help='input image size')
+    # parser.add_argument("--batch_size", type=int, default=512)
+    # parser.add_argument('--n_swap', type=int, default=None)
 
-    # mode parameter
-    parser.add_argument('--mode', type=str, default='csgd', choices=['csgd', 'ring', 'meshgrid', 'exponential', 'dqn_chooseone'])
-    parser.add_argument('--shuffle', type=str, default="fixed", choices=['fixed', 'random'])
-    parser.add_argument('--size', type=int, default=16)
-    parser.add_argument('--port', type=int, default=29500)
-    parser.add_argument('--backend', type=str, default="gloo")
-    # deep model parameter
-    parser.add_argument('--model', type=str, default='ResNet18_M', 
-                        choices=['ResNet18', 'AlexNet', 'DenseNet121', 'AlexNet_M','ResNet18_M', 'ResNet34_M', 'DenseNet121_M'])
-    parser.add_argument("--pretrained", type=int, default=1)
+    # # mode parameter
+    # parser.add_argument('--mode', type=str, default='csgd', choices=['csgd', 'ring', 'meshgrid', 'exponential', 'dqn_chooseone'])
+    # parser.add_argument('--shuffle', type=str, default="fixed", choices=['fixed', 'random'])
+    # parser.add_argument('--size', type=int, default=16)
+    # parser.add_argument('--port', type=int, default=29500)
+    # parser.add_argument('--backend', type=str, default="gloo")
+    # # deep model parameter
+    # parser.add_argument('--model', type=str, default='ResNet18_M', 
+    #                     choices=['ResNet18', 'AlexNet', 'DenseNet121', 'AlexNet_M','ResNet18_M', 'ResNet34_M', 'DenseNet121_M'])
+    # parser.add_argument("--pretrained", type=int, default=1)
 
-    # optimization parameter
-    parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
-    parser.add_argument('--wd', type=float, default=0.0,  help='weight decay')
-    parser.add_argument('--gamma', type=float, default=0.1)
-    parser.add_argument('--momentum', type=float, default=0.0)
-    parser.add_argument('--warmup_step', type=int, default=0)
-    parser.add_argument('--epoch', type=int, default=6000)
-    parser.add_argument('--early_stop', type=int, default=6000, help='w.r.t., iterations')
-    parser.add_argument('--milestones', type=int, nargs='+', default=[2400, 4800])
-    parser.add_argument('--seed', type=int, default=666)
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--amp", action='store_true', help='automatic mixed precision')
+    # # optimization parameter
+    # parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
+    # parser.add_argument('--wd', type=float, default=0.0,  help='weight decay')
+    # parser.add_argument('--gamma', type=float, default=0.1)
+    # parser.add_argument('--momentum', type=float, default=0.0)
+    # parser.add_argument('--warmup_step', type=int, default=0)
+    # parser.add_argument('--epoch', type=int, default=6000)
+    # parser.add_argument('--early_stop', type=int, default=6000, help='w.r.t., iterations')
+    # parser.add_argument('--milestones', type=int, nargs='+', default=[2400, 4800])
+    # parser.add_argument('--seed', type=int, default=666)
+    # parser.add_argument("--device", type=int, default=0)
+    # parser.add_argument("--amp", action='store_true', help='automatic mixed precision')
 
-    args = parser.parse_args()
+    # args = parser.parse_args()
 
-    args = add_identity(args, dir_path)
-    # print(args)
-    main(args)
+    # args = add_identity(args, dir_path)
+    # # print(args)
+    # main(args)
+    main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_size=64, n_swap=None,
+         mode='dqn_chooseone', shuffle="fixed", size=16, port=29500, backend="gloo",
+         model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
+         warmup_step=60, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
+         device=0, amp=False, sample=2)

@@ -1,8 +1,10 @@
 
+import copy
 import torch
 import torch.nn as nn
 from replay_buffer import ReplayBuffer
 import torch.nn.functional as F
+from feature import pca_weights
 criterion = nn.CrossEntropyLoss()
 
 class Worker_Vision:
@@ -56,9 +58,9 @@ class Worker_Vision:
 
         return grad_dict
     
-    def get_accuracy(self):
-        self.model.eval()
-        output = self.model(self.data)
+    def get_accuracy(self, model):
+        model.eval()
+        output = model(self.data)
         _, predicted = torch.max(output.data, 1)
         total_samples = self.target.size(0)
         total_correct = (predicted == self.target).sum().item()
@@ -102,8 +104,7 @@ class DQNAgent(Worker_Vision):
         optimizer, 
         scheduler,
         train_loader, 
-        device,
-        node_number,
+        args,
         max_epsilon: float = 1.0,
         min_epsilon: float = 0.1,
         gamma: float = 0.99,
@@ -114,7 +115,7 @@ class DQNAgent(Worker_Vision):
         seed: int = 6666
         ):
         super().__init__(model, rank, optimizer, scheduler,
-                 train_loader, device)
+                 train_loader, args.device)
         
         # obs dim 设置为 1 
         self.memory = ReplayBuffer(1, memory_size, batch_size)
@@ -126,12 +127,13 @@ class DQNAgent(Worker_Vision):
         self.min_epsilon = min_epsilon
         self.target_update = target_update
         self.gamma = gamma
-        self.node_number = node_number
+        self.node_number = args.node_number
         # device: cpu / gpu
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        print(self.device)
+        # print(self.device)
+        self.sample = args.sample
 
         # networks: dqn, dqn_target
         # self.dqn = Network(obs_dim, action_dim).to(self.device)
@@ -150,11 +152,58 @@ class DQNAgent(Worker_Vision):
         # mode: train / test
         self.is_test = False
 
-        # 先将state 简单化
-        self.state = torch.tensor(self.node_number+1).to(self.device)
-        self.state = self.state.to(torch.float32)
-
+        
         self.update_cnt = 0
+
+    def feature(self, n_components):
+        pca_weights = pca_weights(n_components=n_components, weights=self.model.get_model())
+        pca_weights = torch.from_numpy(pca_weights)
+        return pca_weights
+
+
+    def select_action_sample(self):
+        # 增加采样数量
+        if self.sample < 0:
+            print('invalid sample')
+        else:
+            # 假设 self.dqn 是一个 PyTorch 模型，self.state 是输入状态
+            # 获取网络输出
+            output = self.dqn(self.state.to(self.device))
+            num_samples = self.sample
+            # 使用 multinomial 函数根据输出概率随机选择下标
+            # 注意：multinomial 函数返回的是下标，而不是概率值
+            # replacement=False 表示不重复选择
+            # dim=1 表示在输出张量的最后一个维度上进行选择
+            selected_indices = torch.multinomial(output.softmax(dim=-1), num_samples, replacement=False)
+            # 使用选择的下标来获取对应的输出值
+            selected_outputs = output.gather(1, selected_indices.unsqueeze(-1)).squeeze(-1)
+
+            self.transition_sample = list()
+            for i in range(0, num_samples):
+                self.transition_sample.append([self.state, selected_indices[i].item()])
+                merge_model = self.act(self.model, selected_indices[i], worker_list)
+                old_accuracy = self.get_accuracy(self.model)
+                new_accuracy = self.get_accuracy(merge_model)
+                reward = new_accuracy - old_accuracy
+                next_state = self.feature(n_components)
+                done = 0
+                if not self.is_test():
+                    self.transition_sample[i] += [reward, next_state, done]
+                self.memory.store(*self.transition_sample[i])
+            # 现在 selected_indices 包含了选择的下标，selected_outputs 包含了对应的输出值
+            # self.store_buffer_sample(*self.transition_sample[i])
+
+# 这个函数暂时用不上              
+    def store_buffer_sample(self):
+        for i in range(0, len(self.transition_sample)):
+            # 这里的三个参数的计算到后面再优化
+            done = 0
+            next_state = self.state
+            reward = new_acc - old_acc
+            if not self.is_test:
+            self.transition_sample[i] += [reward, next_state, done]
+            self.memory.store(*self.transition_sample[i])
+
 
     def select_action(self) -> int:
         """Select an action from the input state."""
@@ -187,8 +236,8 @@ class DQNAgent(Worker_Vision):
             self.transition += [reward, next_state, done]
             self.memory.store(*self.transition)
     
-
-    def update_model(self) -> torch.Tensor:
+    # 更新策略网络
+    def update_dqn(self) -> torch.Tensor:
         """Update the model by gradient descent."""
         samples = self.memory.sample_batch()
 
@@ -200,31 +249,43 @@ class DQNAgent(Worker_Vision):
 
         return loss.item()
     
-    # 这个方法用于在每个step里面模型融合
-    def step_update(self,worker_list):
-        action = self.select_action()
-        for name, param in self.model.named_parameters():
+    # 做出行动
+    def act(self, model, action, worker_list):
+        model = copy.deepcopy(model)
+        for name, param in model.named_parameters():
             choose_worker = worker_list[action]
             param.data += choose_worker.model.state_dict()[name].data
             param.data /= 2
+        return model
+
+
+    # 这个方法用于在每个step里面模型融合
+    def step_updatemodel(self,worker_list):
+        action = self.select_action()
+        self.model = self.act(self.model, action, worker_list)
     
     def train_step_dqn(self, worker_list):
         # action = self.select_action(self.state)
         # next_state, reward, done = self.step(action)
         # next_state = self.state
+        self.state = self.feature(n_components)
 
-        self.step_update(worker_list)
+        # 在选择action并作出action前先判断是否要sample
+        if self.sample > 0:
+            self.select_action_sample()
+        # 这一步的作用是选择action并作出action
+        self.step_updatemodel(worker_list)
         
-
+        # 思考done的含义？
         # if episode ends
         # if done:
             # state, _ = self.env.reset(seed=self.seed)
             # scores.append(score)
             # score = 0
-
+        # 在这里更新策略函数
         # if training is ready
         if len(self.memory) >= self.batch_size:
-            loss = self.update_model()
+            loss = self.update_dqn()
             # losses.append(loss)
             self.update_cnt += 1
             
