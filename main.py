@@ -35,7 +35,7 @@ def main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_s
          mode='csgd', shuffle="fixed", size=16, port=29500, backend="gloo",
          model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
          warmup_step=0, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
-         device=0, amp=False, sample=0):
+         device=0, amp=False, sample=0, n_components=0):
     
     # set_seed(args)
     set_seed(seed, torch.cuda.device_count())
@@ -98,13 +98,15 @@ def main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_s
                     worker.step()
                     worker.update_grad()
             elif args.mode == 'dqn_chooseone':
+                worker_list_model = [copy.deepcopy(i.model) for i in worker_list]
                 for worker in worker_list:
+                    worker.get_workerlist(worker_list_model)
                     worker.step() # 先用数据更新模型
                     worker.update_grad()
-                    old_accuracy = worker.get_accuracy()
+                    old_accuracy = worker.get_accuracy(worker.model)
                     # 然后更新策略模型
                     worker.train_step_dqn(worker_list)
-                    new_accuracy = worker.get_accuracy()
+                    new_accuracy = worker.get_accuracy(worker.model)
                     worker.store_buffer(old_accuracy, new_accuracy) # 将这一次的经验放入buffer
                     
 
@@ -212,4 +214,4 @@ if __name__=='__main__':
          mode='dqn_chooseone', shuffle="fixed", size=16, port=29500, backend="gloo",
          model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
          warmup_step=60, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
-         device=0, amp=False, sample=2)
+         device=0, amp=False, sample=2, n_components=5)

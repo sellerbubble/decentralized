@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 from replay_buffer import ReplayBuffer
 import torch.nn.functional as F
-from feature import pca_weights
+from feature import *
+import torch.optim as optim
 criterion = nn.CrossEntropyLoss()
 
 class Worker_Vision:
@@ -128,6 +129,7 @@ class DQNAgent(Worker_Vision):
         self.target_update = target_update
         self.gamma = gamma
         self.node_number = args.node_number
+        self.n_components = args.n_components
         # device: cpu / gpu
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
@@ -143,8 +145,8 @@ class DQNAgent(Worker_Vision):
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
         
-        # optimizer 使用原本的优化器
-        # self.optimizer = optim.Adam(self.dqn.parameters())
+        # dqn网络的optimizer
+        self.dqn_optimizer = optim.Adam(self.dqn.parameters())
 
         # transition to store in memory
         self.transition = list()
@@ -155,10 +157,10 @@ class DQNAgent(Worker_Vision):
         
         self.update_cnt = 0
 
-    def feature(self, n_components):
-        pca_weights = pca_weights(n_components=n_components, weights=self.model.get_model())
-        pca_weights = torch.from_numpy(pca_weights)
-        return pca_weights
+    def feature(self, n_components, model):
+        weights_pca = pca_weights(n_components=n_components, weights=model.get_model())
+        weights_pca = torch.from_numpy(pca_weights)
+        return weights_pca
 
 
     def select_action_sample(self):
@@ -181,11 +183,11 @@ class DQNAgent(Worker_Vision):
             self.transition_sample = list()
             for i in range(0, num_samples):
                 self.transition_sample.append([self.state, selected_indices[i].item()])
-                merge_model = self.act(self.model, selected_indices[i], worker_list)
+                merge_model = self.act(self.model, selected_indices[i], self.worker_list)
                 old_accuracy = self.get_accuracy(self.model)
                 new_accuracy = self.get_accuracy(merge_model)
                 reward = new_accuracy - old_accuracy
-                next_state = self.feature(n_components)
+                next_state = self.feature(self.n_components, merge_model)
                 done = 0
                 if not self.is_test():
                     self.transition_sample[i] += [reward, next_state, done]
@@ -193,7 +195,8 @@ class DQNAgent(Worker_Vision):
             # 现在 selected_indices 包含了选择的下标，selected_outputs 包含了对应的输出值
             # self.store_buffer_sample(*self.transition_sample[i])
 
-# 这个函数暂时用不上              
+# 这个函数暂时用不上            
+    '''  
     def store_buffer_sample(self):
         for i in range(0, len(self.transition_sample)):
             # 这里的三个参数的计算到后面再优化
@@ -201,8 +204,9 @@ class DQNAgent(Worker_Vision):
             next_state = self.state
             reward = new_acc - old_acc
             if not self.is_test:
-            self.transition_sample[i] += [reward, next_state, done]
-            self.memory.store(*self.transition_sample[i])
+                .transition_sample[i] += [reward, next_state, done]
+                self.memory.store(*self.transition_sample[i])
+    '''
 
 
     def select_action(self) -> int:
@@ -229,7 +233,7 @@ class DQNAgent(Worker_Vision):
         # next_state, reward, terminated, truncated, _ = self.env.step(action)
         # 这里设定next state 和state 相同 ， done设置为False，reward 用准确率的变化来计算
         done = 0
-        next_state = self.state
+        next_state = self.feature(self.n_components, self.model)
         reward = new_acc - old_acc
 
         if not self.is_test:
@@ -243,9 +247,9 @@ class DQNAgent(Worker_Vision):
 
         loss = self._compute_dqn_loss(samples)
 
-        self.optimizer.zero_grad()
+        self.dqn_optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
+        self.dqn_optimizer.step()
 
         return loss.item()
     
@@ -254,10 +258,12 @@ class DQNAgent(Worker_Vision):
         model = copy.deepcopy(model)
         for name, param in model.named_parameters():
             choose_worker = worker_list[action]
-            param.data += choose_worker.model.state_dict()[name].data
+            param.data += choose_worker.state_dict()[name].data
             param.data /= 2
         return model
 
+    def get_workerlist(self, worker_list):
+        self.worker_list_model = worker_list
 
     # 这个方法用于在每个step里面模型融合
     def step_updatemodel(self,worker_list):
@@ -268,11 +274,13 @@ class DQNAgent(Worker_Vision):
         # action = self.select_action(self.state)
         # next_state, reward, done = self.step(action)
         # next_state = self.state
-        self.state = self.feature(n_components)
+        
+        self.state = self.feature(self.n_components, self.model)
 
         # 在选择action并作出action前先判断是否要sample
         if self.sample > 0:
             self.select_action_sample()
+        
         # 这一步的作用是选择action并作出action
         self.step_updatemodel(worker_list)
         
