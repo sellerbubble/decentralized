@@ -16,6 +16,8 @@ from utils.scheduler import Warmup_MultiStepLR
 from utils.utils import *
 from easydict import EasyDict
 import wandb
+from utils.dirichlet import  dirichlet_split_noniid
+from torchvision.datasets import CIFAR10
 
 # 登录Wandb账户
 wandb.login(key="831b4bf90cf69dcf8cae62953d13595412ce439d")
@@ -35,7 +37,7 @@ def main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_s
          mode='csgd', shuffle="fixed", size=16, port=29500, backend="gloo",
          model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
          warmup_step=0, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
-         device=0, amp=False, sample=0, n_components=0):
+         device=0, amp=False, sample=0, n_components=0, nonIID=False):
     
     # set_seed(args)
     set_seed(seed, torch.cuda.device_count())
@@ -54,7 +56,12 @@ def main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_s
     probe_train_loader, probe_valid_loader, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size,
                                                                     train_batch_size=256, valid_batch_size=64)
     worker_list = []
-    split = [1.0 / args.size for _ in range(args.size)]   # split 是一个列表 代表每个model分的dataset
+    if nonIID == False:
+        split = [1.0 / args.size for _ in range(args.size)]   # split 是一个列表 代表每个model分的dataset
+    else:
+        train_set = CIFAR10(root=args.dataset_path, train=True, transform=None, download=True)
+        label = np.array(train_set.targets)
+        split = dirichlet_split_noniid(train_labels=label, alpha=args.alpha, n_clients=args.size)
     for rank in range(args.size):
         train_loader, _, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size, 
                                                     train_batch_size=args.batch_size, 
@@ -214,4 +221,4 @@ if __name__=='__main__':
          mode='dqn_chooseone', shuffle="fixed", size=16, port=29500, backend="gloo",
          model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
          warmup_step=60, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
-         device=0, amp=False, sample=2, n_components=5)
+         device=0, amp=False, sample=2, n_components=5, nonIID=True)

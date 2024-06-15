@@ -8,3 +8,4 @@
    在worker_vision.py 里用feature.py中的方法定义了160行的self.feature（） 函数用于返回压缩权重
 6:在worker_vision.py添加166行的select_action_sample()方法 用于对action进行采样并存储到buffer中
 7:main.py 添加 152行用于wandb记录
+8:main.py 添加61行用于IID数据分布，但是只关于cifar数据集
