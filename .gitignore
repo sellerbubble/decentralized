@@ -19,3 +19,4 @@ logs*
 *.jpg
 # *.pdf
 *.pt
+dev.py
