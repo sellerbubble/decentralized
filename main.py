@@ -52,6 +52,7 @@ def main(
     lr=0.1,
     wd=0.0,
     gamma=0.1,
+    alpha=0.3,
     momentum=0.0,
     warmup_step=0,
     epoch=6000,
@@ -62,22 +63,36 @@ def main(
     amp=False,
     sample=0,
     n_components=0,
-    nonIID=False,
+    nonIID=True,
     project_name="decentralized",
 ):
+    sub_dict_keys = [
+        "dataset_name",
+        "image_size",
+        "batch_size",
+        "mode",
+        "model",
+        "pretrained",
+        "alpha",
+        "epoch",
+        "nonIID",
+    ]
+    args = EasyDict(locals().copy())
+    # set_seed(args)
+    set_seed(seed, torch.cuda.device_count())
+    dir_path = os.path.dirname(__file__)
+    args = add_identity(args, dir_path)
+    sub_dict_str = "_".join([key + str(args[key]) for key in sub_dict_keys])
     # 登录Wandb账户
     wandb.login(key="831b4bf90cf69dcf8cae62953d13595412ce439d")
 
     # 初始化Wandb项目
-    wandb.init(project=project_name)
+    run = wandb.init(project=project_name)
+    wandb.config.update(args)
 
+    run.name = sub_dict_str
+    run.save()
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-    dir_path = os.path.dirname(__file__)
-
-    # set_seed(args)
-    set_seed(seed, torch.cuda.device_count())
-    args = EasyDict(locals().copy())
-    args = add_identity(args, dir_path)
 
     # check nfs dataset path
 
@@ -243,33 +258,4 @@ if __name__ == "__main__":
         dataset_path = nfs_dataset_path1
     elif os.path.exists(nfs_dataset_path2):
         dataset_path = nfs_dataset_path2
-    Fire(
-        main(
-            dataset_path="datasets",
-            dataset_name="CIFAR10",
-            image_size=56,
-            batch_size=64,
-            n_swap=None,
-            mode="dqn_chooseone",
-            shuffle="fixed",
-            size=16,
-            port=29500,
-            backend="gloo",
-            model="ResNet18_M",
-            pretrained=1,
-            lr=0.1,
-            wd=0.0,
-            gamma=0.1,
-            momentum=0.0,
-            warmup_step=60,
-            epoch=6000,
-            early_stop=6000,
-            milestones=[2400, 4800],
-            seed=666,
-            device=0,
-            amp=False,
-            sample=2,
-            n_components=5,
-            nonIID=True,
-        )
-    )
+    Fire(main)
