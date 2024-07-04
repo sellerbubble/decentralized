@@ -247,7 +247,7 @@ if __name__ == "__main__":
         dataset_path = nfs_dataset_path2
     Fire(
         main(
-            dataset_path="datasets",
+            dataset_path="/home/lwh/newdecentral/datasets",
             dataset_name="CIFAR10",
             image_size=56,
             batch_size=64,
@@ -268,7 +268,7 @@ if __name__ == "__main__":
             early_stop=6000,
             milestones=[2400, 4800],
             seed=666,
-            device="cuda:1",
+            device="cuda:2",
             amp=False,
             sample=2,
             n_components=5,

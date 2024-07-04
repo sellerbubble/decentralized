@@ -158,7 +158,7 @@ class DQNAgent(Worker_Vision):
 
     def feature(self, n_components, model):
         weights_pca = pca_weights(n_components=n_components, weights=model.state_dict())
-        weights_pca = torch.from_numpy(pca_weights)
+        # weights_pca = torch.from_numpy(pca_weights)
         return weights_pca
 
 
