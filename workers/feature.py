@@ -5,6 +5,8 @@ import time
 
 def pca_weights(n_components, weights):
       # weights 是 state dict
+      result = None
+      min_shape = 0
       for value in weights.values():
     
             if len(value.shape) == 4 and value.shape[-2] == 3 and value.shape[-1] == 3:
@@ -30,13 +32,17 @@ def pca_weights(n_components, weights):
                   # 
                   
             # print(result.shape)
-            n_components = result.shape[0]
-            pca = PCA(n_components=n_components)
-            time1 = time.time()
-            # weights = np.array(result)
-            # print(pca.fit_transform(result))
-            print(time.time()-time1)
-            return pca.fit_transform(result)
+      n_components = result.shape[0]
+      result = result.cpu()
+      pca = PCA(n_components=n_components)
+      time1 = time.time()
+      # weights = np.array(result)
+      # print(pca.fit_transform(result))
+      print(time.time()-time1)
+      pca_weights = pca.fit_transform(result)
+      pca_weights = torch.from_numpy(pca_weights)
+      pca_weights = pca_weights.mean(dim=-1)
+      return pca_weights
 
                   
 

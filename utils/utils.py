@@ -336,7 +336,7 @@ def update_dqn_chooseone(worker_list):
         worker.step()
         worker.update_grad()
         old_accuracy = worker.get_accuracy(worker.model)
-        worker.train_step_dqn(worker_list)
+        worker.train_step_dqn()
         new_accuracy = worker.get_accuracy(worker.model)
         worker.store_buffer(old_accuracy, new_accuracy)
 

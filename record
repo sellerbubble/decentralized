@@ -16,3 +16,8 @@ done 的具体含义为一轮epoch的技术，是否合适？因为在一轮epoc
 
 如果以原本的思路：预测和价值一起作为输出，那么对于每个输入图片都会有一次价值预测，对于每个batch的图片就会有很多预测，
 但实际只用对每个step做一次价值预测就行了
+
+7.5
+修改了pca的方法后有很多要一起修改的点
+pca之后的state维度是【144】 所以创建value model时的input维度也是144 replay buffer的obs dim也是144
+将state维度放入args state size中

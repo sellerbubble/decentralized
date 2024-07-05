@@ -11,8 +11,7 @@ class ReplayBuffer:
                  size: int, batch_size: int = 32):
         self.obs_buf = torch.zeros([size, obs_dim], dtype=torch.float32)
         self.next_obs_buf = torch.zeros([size, obs_dim], dtype=torch.float32)
-        # self.obs_buf = [None for i in range(0, size)]
-        # self.next_obs_buf = [None for i in range(0, size)]
+        
         self.acts_buf = torch.zeros(size, dtype=torch.float32)
         self.rews_buf = torch.zeros(size, dtype=torch.float32)
         self.done_buf = torch.zeros(size, dtype=torch.float32)

@@ -118,8 +118,8 @@ class DQNAgent(Worker_Vision):
         super().__init__(model, rank, optimizer, scheduler,
                  train_loader, args.device)
         
-        # obs dim 设置为 1 
-        self.memory = ReplayBuffer(1, memory_size, batch_size)
+        self.state_size = args.state_size
+        self.memory = ReplayBuffer(self.state_size, memory_size, batch_size)
         self.batch_size = batch_size
         self.epsilon = max_epsilon
         self.epsilon_decay = epsilon_decay
@@ -158,7 +158,7 @@ class DQNAgent(Worker_Vision):
 
     def feature(self, n_components, model):
         weights_pca = pca_weights(n_components=n_components, weights=model.state_dict())
-        # weights_pca = torch.from_numpy(pca_weights)
+        # weights_pca = torch.from_numpy(weights_pca)
         return weights_pca
 
 
@@ -169,26 +169,27 @@ class DQNAgent(Worker_Vision):
         else:
             # 假设 self.dqn 是一个 PyTorch 模型，self.state 是输入状态
             # 获取网络输出
-            output = self.dqn(self.state.to(self.device))
+            output = self.dqn(self.state.to(self.device)) # output shape [size]
             num_samples = self.sample
             # 使用 multinomial 函数根据输出概率随机选择下标
             # 注意：multinomial 函数返回的是下标，而不是概率值
             # replacement=False 表示不重复选择
             # dim=1 表示在输出张量的最后一个维度上进行选择
             selected_indices = torch.multinomial(output.softmax(dim=-1), num_samples, replacement=False)
-            # 使用选择的下标来获取对应的输出值
-            selected_outputs = output.gather(1, selected_indices.unsqueeze(-1)).squeeze(-1)
+            # selected_indices shape [sample] 
+            # 使用选择的下标来获取对应的输出值 selected_indices 和 output shape 相同 都是一维
+            selected_outputs = output.gather(0, selected_indices)
 
             self.transition_sample = list()
             for i in range(0, num_samples):
                 self.transition_sample.append([self.state, selected_indices[i].item()])
-                merge_model = self.act(self.model, selected_indices[i], self.worker_list)
+                merge_model = self.act(self.model, selected_indices[i], self.worker_list_model)
                 old_accuracy = self.get_accuracy(self.model)
                 new_accuracy = self.get_accuracy(merge_model)
                 reward = new_accuracy - old_accuracy
                 next_state = self.feature(self.n_components, merge_model)
                 done = 0
-                if not self.is_test():
+                if not self.is_test:
                     self.transition_sample[i] += [reward, next_state, done]
                 self.memory.store(*self.transition_sample[i])
             # 现在 selected_indices 包含了选择的下标，selected_outputs 包含了对应的输出值
@@ -213,7 +214,7 @@ class DQNAgent(Worker_Vision):
         # epsilon greedy policy
         if self.epsilon > torch.rand(1).item():
             # selected_action = self.env.action_space.sample()
-            action_space = torch.tensor([i for i in range(0, self.clients_number )])
+            action_space = torch.tensor([i for i in range(0, self.clients_number)])
             selected_action = action_space[torch.randint(low=0, high=len(action_space), size=(1,))].item()
         else:
             selected_action = self.dqn(
@@ -269,7 +270,7 @@ class DQNAgent(Worker_Vision):
         action = self.select_action()
         self.model = self.act(self.model, action, worker_list)
     
-    def train_step_dqn(self, worker_list):
+    def train_step_dqn(self):
         # action = self.select_action(self.state)
         # next_state, reward, done = self.step(action)
         # next_state = self.state
@@ -281,7 +282,7 @@ class DQNAgent(Worker_Vision):
             self.select_action_sample()
         
         # 这一步的作用是选择action并作出action
-        self.step_updatemodel(worker_list)
+        self.step_updatemodel(self.worker_list_model)
         
         # 思考done的含义？
         # if episode ends

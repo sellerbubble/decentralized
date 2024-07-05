@@ -64,7 +64,8 @@ def main(
     n_components=0,
     nonIID=False,
     project_name="decentralized",
-    alpha=0
+    alpha=0,
+    state_size=1
 ):
     # 登录Wandb账户
     wandb.login(key="831b4bf90cf69dcf8cae62953d13595412ce439d")
@@ -98,7 +99,7 @@ def main(
         train_batch_size=args.batch_size,
         valid_batch_size=args.batch_size,
     )
-    worker_list = []
+    
     if nonIID:
         train_set = CIFAR10(
             root=args.dataset_path, train=True, transform=None, download=True
@@ -112,8 +113,10 @@ def main(
         split = [
             1.0 / args.size for _ in range(args.size)
         ]  # split 是一个列表 代表每个model分的dataset
-
+    worker_list = []
+    # model_list = []
     for rank in range(args.size):
+        
         train_loader, _, _, classes = load_dataset(
             root=args.dataset_path,
             name=args.dataset_name,
@@ -128,7 +131,7 @@ def main(
             args.device
         )
         if args.mode == "dqn_chooseone":
-            value_model = load_valuemodel(1, 50, args.size)
+            value_model = load_valuemodel(args.state_size, 320, args.size) # 这里的144是pca weights的压缩后的维度 pca weights的shape是[144,144]
 
         optimizer = SGD(
             model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum
@@ -155,6 +158,7 @@ def main(
                     model, rank, optimizer, scheduler, train_loader, args.device
                 )
         worker_list.append(worker)
+        # model_list.append(model)
 
     # 定义 中心模型 center_model
     center_model = copy.deepcopy(worker_list[0].model)
@@ -273,6 +277,7 @@ if __name__ == "__main__":
             sample=2,
             n_components=5,
             nonIID=True,
-            alpha = 0.1
+            alpha = 0.1,
+            state_size=144
         )
     )

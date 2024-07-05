@@ -12,6 +12,7 @@ class Value_model(nn.Module):
 
     def forward(self, x):
         # 通过隐藏层
+        x = x.float()
         x = F.relu(self.fc1(x))
         # 通过输出层
         x = self.fc2(x)
