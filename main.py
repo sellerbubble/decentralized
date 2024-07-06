@@ -1,5 +1,3 @@
-
-
 import os
 import copy
 import torch
@@ -11,173 +9,212 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import MultiStepLR
 from datasets import load_dataset
 from networks import load_model, load_valuemodel
-from workers.worker_vision import *
+from workers.worker_vision import Worker_Vision, Worker_Vision_AMP, DQNAgent
 from utils.scheduler import Warmup_MultiStepLR
-from utils.utils import *
+from utils.utils import (
+    set_seed,
+    add_identity,
+    generate_P,
+    save_model,
+    evaluate_and_log,
+    update_center_model,
+    update_dsgd,
+    update_dqn_chooseone,
+    update_csgd,
+)
 from easydict import EasyDict
 import wandb
-from utils.dirichlet import  dirichlet_split_noniid
+from utils.dirichlet import dirichlet_split_noniid
 from torchvision.datasets import CIFAR10
+import numpy as np
 
-# 登录Wandb账户
-wandb.login(key="831b4bf90cf69dcf8cae62953d13595412ce439d")
-
-# 初始化Wandb项目
-wandb.init(project="example_project", entity="your_entity_name")
-
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-dir_path = os.path.dirname(__file__)
-
-nfs_dataset_path1 = '/mnt/nfs4-p1/ckx/datasets/'
-nfs_dataset_path2 = '/nfs4-p1/ckx/datasets/'
 from fire import Fire
-# torch.set_num_threads(4) 
 
-def main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_size=512, n_swap=None,
-         mode='csgd', shuffle="fixed", size=16, port=29500, backend="gloo",
-         model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
-         warmup_step=0, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
-         device=0, amp=False, sample=0, n_components=0, nonIID=False):
-    
+# torch.set_num_threads(4)
+
+nfs_dataset_path1 = "/mnt/nfs4-p1/ckx/datasets/"
+nfs_dataset_path2 = "/nfs4-p1/ckx/datasets/"
+
+
+def main(
+    dataset_path="datasets",
+    dataset_name="CIFAR10",
+    image_size=56,
+    batch_size=512,
+    n_swap=None,
+    mode="csgd",
+    shuffle="fixed",
+    size=16,
+    port=29500,
+    backend="gloo",
+    model="ResNet18_M",
+    pretrained=1,
+    lr=0.1,
+    wd=0.0,
+    gamma=0.1,
+    alpha=0.3,
+    momentum=0.0,
+    warmup_step=0,
+    epoch=6000,
+    early_stop=6000,
+    milestones=[2400, 4800],
+    seed=666,
+    device=0,
+    amp=False,
+    sample=0,
+    n_components=0,
+    nonIID=True,
+    project_name="decentralized",
+):
+    sub_dict_keys = [
+        "dataset_name",
+        "image_size",
+        "batch_size",
+        "mode",
+        "model",
+        "pretrained",
+        "alpha",
+        "epoch",
+        "nonIID",
+    ]
+    args = EasyDict(locals().copy())
     # set_seed(args)
     set_seed(seed, torch.cuda.device_count())
-    args = EasyDict(locals().copy())
+    dir_path = os.path.dirname(__file__)
     args = add_identity(args, dir_path)
+    sub_dict_str = "_".join([key + str(args[key]) for key in sub_dict_keys])
+    # 登录Wandb账户
+    wandb.login(key="831b4bf90cf69dcf8cae62953d13595412ce439d")
+
+    # 初始化Wandb项目
+    run = wandb.init(project=project_name)
+    wandb.config.update(args)
+
+    run.name = sub_dict_str
+    run.save()
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
     # check nfs dataset path
-    if os.path.exists(nfs_dataset_path1):
-        args.dataset_path = nfs_dataset_path1
-    elif os.path.exists(nfs_dataset_path2):
-        args.dataset_path = nfs_dataset_path2
 
-    log_id = datetime.datetime.now().strftime('%b%d_%H:%M:%S') + '_' + socket.gethostname() + '_' + args.identity
+    log_id = (
+        datetime.datetime.now().strftime("%b%d_%H:%M:%S")
+        + "_"
+        + socket.gethostname()
+        + "_"
+        + args.identity
+    )
     writer = SummaryWriter(log_dir=os.path.join(args.runs_data_dir, log_id))
 
-    probe_train_loader, probe_valid_loader, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size,
-                                                                    train_batch_size=256, valid_batch_size=64)
+    probe_train_loader, probe_valid_loader, _, classes = load_dataset(
+        root=args.dataset_path,
+        name=args.dataset_name,
+        image_size=args.image_size,
+        train_batch_size=args.batch_size,
+        valid_batch_size=args.batch_size,
+    )
     worker_list = []
-    if nonIID == False:
-        split = [1.0 / args.size for _ in range(args.size)]   # split 是一个列表 代表每个model分的dataset
-    else:
-        train_set = CIFAR10(root=args.dataset_path, train=True, transform=None, download=True)
+    if nonIID:
+        train_set = CIFAR10(
+            root=args.dataset_path, train=True, transform=None, download=True
+        )
         label = np.array(train_set.targets)
-        split = dirichlet_split_noniid(train_labels=label, alpha=args.alpha, n_clients=args.size)
+        split = dirichlet_split_noniid(
+            train_labels=label, alpha=args.alpha, n_clients=args.size
+        )
+    else:
+        split = [
+            1.0 / args.size for _ in range(args.size)
+        ]  # split 是一个列表 代表每个model分的dataset
+
     for rank in range(args.size):
-        train_loader, _, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size, 
-                                                    train_batch_size=args.batch_size, 
-                                                    distribute=True, rank=rank, split=split, seed=args.seed)
-        if args.mode == 'dqn_chooseone':
-            model = load_model(args.model, classes, pretrained=args.pretrained).to(args.device)
+        train_loader, _, _, classes = load_dataset(
+            root=args.dataset_path,
+            name=args.dataset_name,
+            image_size=args.image_size,
+            train_batch_size=args.batch_size,
+            distribute=True,
+            rank=rank,
+            split=split,
+            seed=args.seed,
+        )
+        model = load_model(args.model, classes, pretrained=args.pretrained).to(
+            args.device
+        )
+        if args.mode == "dqn_chooseone":
             value_model = load_valuemodel(1, 50, args.size)
-        else:
-            model = load_model(args.model, classes, pretrained=args.pretrained).to(args.device)
-        optimizer = SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+
+        optimizer = SGD(
+            model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum
+        )
         # scheduler = MultiStepLR(optimizer, milestones=args.milestones, gamma=args.gamma)
-        scheduler = Warmup_MultiStepLR(optimizer, warmup_step=args.warmup_step, milestones=args.milestones, gamma=args.gamma)
+        scheduler = Warmup_MultiStepLR(
+            optimizer,
+            warmup_step=args.warmup_step,
+            milestones=args.milestones,
+            gamma=args.gamma,
+        )
         # worker是训练器
         if args.amp:
-            worker = Worker_Vision_AMP(model, rank, optimizer, scheduler, train_loader, args.device)
+            worker = Worker_Vision_AMP(
+                model, rank, optimizer, scheduler, train_loader, args.device
+            )
         else:
-            if args.mode == 'dqn_chooseone':
-                worker = DQNAgent(model, value_model, rank, optimizer, scheduler, train_loader, args)
+            if args.mode == "dqn_chooseone":
+                worker = DQNAgent(
+                    model, value_model, rank, optimizer, scheduler, train_loader, args
+                )
             else:
-                worker = Worker_Vision(model, rank, optimizer, scheduler, train_loader, args.device)
+                worker = Worker_Vision(
+                    model, rank, optimizer, scheduler, train_loader, args.device
+                )
         worker_list.append(worker)
-
 
     # 定义 中心模型 center_model
     center_model = copy.deepcopy(worker_list[0].model)
-    # center_model = copy.deepcopy(worker_list[0].model)
     for name, param in center_model.named_parameters():
         for worker in worker_list[1:]:
             param.data += worker.model.state_dict()[name].data
         param.data /= args.size
 
     P = generate_P(args.mode, args.size)
-    iteration = 0
-    for epoch in range(args.epoch):  
-        for worker in worker_list:
-            worker.update_iter()   
-        for _ in range(train_loader.__len__()):
-            if args.mode == 'csgd':
-                for worker in worker_list:
-                    worker.model.load_state_dict(center_model.state_dict())
-                    worker.step()
-                    worker.update_grad()
-            elif args.mode == 'dqn_chooseone':
-                worker_list_model = [copy.deepcopy(i.model) for i in worker_list]
-                for worker in worker_list:
-                    worker.get_workerlist(worker_list_model)
-                    worker.step() # 先用数据更新模型
-                    worker.update_grad()
-                    old_accuracy = worker.get_accuracy(worker.model)
-                    # 然后更新策略模型
-                    worker.train_step_dqn(worker_list)
-                    new_accuracy = worker.get_accuracy(worker.model)
-                    worker.store_buffer(old_accuracy, new_accuracy) # 将这一次的经验放入buffer
-                    
+
+    for iteration in range(args.early_stop):
+        epoch = iteration // len(train_loader)
+
+        if iteration % len(train_loader) == 0:
+            for worker in worker_list:
+                worker.update_iter()
+
+        if args.mode == "csgd":
+            update_csgd(worker_list, center_model)
+        elif args.mode == "dqn_chooseone":
+            update_dqn_chooseone(worker_list)
+        else:  # dsgd
+            update_dsgd(worker_list, P, args)
+
+        center_model = update_center_model(worker_list)
+
+        if iteration % 50 == 0:
+            train_acc, train_loss, valid_acc, valid_loss = evaluate_and_log(
+                center_model,
+                probe_train_loader,
+                probe_valid_loader,
+                iteration,
+                epoch,
+                writer,
+                args,
+                wandb,
+            )
+
+        if iteration == args.early_stop - 1:
+            save_model(center_model, train_acc, epoch, args, log_id)
+            break
+
+    writer.close()
+    print("Ending")
 
 
-            else: # dsgd
-                # 每个iteration，传播矩阵P中的worker做random shuffle（自己的邻居在下一个iteration时改变）
-                if args.shuffle == "random":
-                    P_perturbed = np.matmul(np.matmul(PermutationMatrix(args.size).T,P),PermutationMatrix(args.size)) 
-                elif args.shuffle == "fixed":
-                    P_perturbed = P
-                model_dict_list = []
-                for worker in worker_list:
-                    model_dict_list.append(worker.model.state_dict())  
-                for worker in worker_list:
-                    worker.step()
-                    for name, param in worker.model.named_parameters():
-                        param.data = torch.zeros_like(param.data)
-                        for i in range(args.size):
-                            p = P_perturbed[worker.rank][i]
-                            param.data += model_dict_list[i][name].data * p
-                    # worker.step() # 效果会变差
-                    worker.update_grad()
-
-            center_model = copy.deepcopy(worker_list[0].model)
-            for name, param in center_model.named_parameters():
-                for worker in worker_list[1:]:
-                    param.data += worker.model.state_dict()[name].data
-                param.data /= args.size
-            
-            if iteration % 50 == 0:    
-                start_time = datetime.datetime.now() 
-                eval_iteration = iteration
-                if args.amp:
-                    train_acc, train_loss, valid_acc, valid_loss = eval_vision_amp(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, writer, args.device)                    
-                else:
-                    train_acc, train_loss, valid_acc, valid_loss = eval_vision(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, writer, args.device)
-                print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
-                        f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
-                        f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
-                        flush=True, end="\n")
-                wandb.log({'iteration': iteration, 'epoch': epoch, 'train_loss': train_loss,'train_acc': train_acc,
-                           'valid_loss':valid_loss, 'valid_acc': valid_acc })
-            else:
-                end_time = datetime.datetime.now() 
-                print(f"\r|\033[0;31m Iteration:{eval_iteration}-{iteration}, time: {(end_time - start_time).seconds}s\033[0m", flush=True, end="")
-            iteration += 1
-            if iteration == args.early_stop: break
-        if iteration == args.early_stop: break
-
-    state = {
-        'acc': train_acc,
-        'epoch': epoch,
-        'state_dict': center_model.state_dict() 
-    }    
-    if not os.path.exists(args.perf_dict_dir):
-        os.mkdir(args.perf_dict_dir)  
-    torch.save(state, os.path.join(args.perf_dict_dir, log_id + '.t7'))
-
-    writer.close()        
-    print('ending')
-
-if __name__=='__main__':
+if __name__ == "__main__":
 
     # parser = argparse.ArgumentParser()
     # ## dataset
@@ -195,7 +232,7 @@ if __name__=='__main__':
     # parser.add_argument('--port', type=int, default=29500)
     # parser.add_argument('--backend', type=str, default="gloo")
     # # deep model parameter
-    # parser.add_argument('--model', type=str, default='ResNet18_M', 
+    # parser.add_argument('--model', type=str, default='ResNet18_M',
     #                     choices=['ResNet18', 'AlexNet', 'DenseNet121', 'AlexNet_M','ResNet18_M', 'ResNet34_M', 'DenseNet121_M'])
     # parser.add_argument("--pretrained", type=int, default=1)
 
@@ -217,8 +254,8 @@ if __name__=='__main__':
     # args = add_identity(args, dir_path)
     # # print(args)
     # main(args)
-    main(dataset_path='datasets', dataset_name='CIFAR10', image_size=56, batch_size=64, n_swap=None,
-         mode='dqn_chooseone', shuffle="fixed", size=16, port=29500, backend="gloo",
-         model='ResNet18_M', pretrained=1, lr=0.1, wd=0.0, gamma=0.1, momentum=0.0,
-         warmup_step=60, epoch=6000, early_stop=6000, milestones=[2400, 4800], seed=666,
-         device=0, amp=False, sample=2, n_components=5, nonIID=True)
+    if os.path.exists(nfs_dataset_path1):
+        dataset_path = nfs_dataset_path1
+    elif os.path.exists(nfs_dataset_path2):
+        dataset_path = nfs_dataset_path2
+    Fire(main)

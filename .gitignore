@@ -19,3 +19,7 @@ logs*
 *.jpg
 # *.pdf
 *.pt
+dev.py
+wandb/*
+unkillable.sh
+main.sh
